@@ -1,0 +1,6 @@
+accounts.json
+client_secret*.json
+secret.txt
+*.zip
+__pycache__/
+test_*.py

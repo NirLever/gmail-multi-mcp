@@ -1,0 +1,6 @@
+mcp>=1.30,<2
+google-api-python-client>=2.150
+google-auth>=2.35
+google-auth-oauthlib>=1.2
+google-cloud-secret-manager>=2.20
+uvicorn>=0.30
