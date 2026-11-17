@@ -9,7 +9,8 @@ PN=$(gcloud projects describe "$P" --format='value(projectNumber)')
 SA="${PN}-compute@developer.gserviceaccount.com"
 
 CLIENT=$(ls -t ~/client_secret*.json 2>/dev/null | head -1 || true)
-if [ -z "$CLIENT" ]; then echo "!! Upload the OAuth client JSON (client_secret_....json) to your home folder first"; exit 1; fi
+if [ -z "$CLIENT" ] && ! gcloud secrets describe oauth-client >/dev/null 2>&1; then
+  echo "!! Upload the OAuth client JSON (client_secret_....json) to your home folder first"; exit 1; fi
 
 mk() { # name, file
   if gcloud secrets describe "$1" >/dev/null 2>&1; then
@@ -19,12 +20,12 @@ mk() { # name, file
     else gcloud secrets create "$1" --replication-policy=automatic >/dev/null; fi
   fi
 }
-mk oauth-client "$CLIENT"
+[ -n "$CLIENT" ] && mk oauth-client "$CLIENT"
 if ! gcloud secrets describe mcp-secret >/dev/null 2>&1; then
   head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > /tmp/ms && mk mcp-secret /tmp/ms && rm /tmp/ms
 fi
 mk gmail-accounts
-rm -f "$CLIENT"
+[ -n "$CLIENT" ] && rm -f "$CLIENT"
 
 for s in oauth-client mcp-secret gmail-accounts; do
   gcloud secrets add-iam-policy-binding "$s" --member="serviceAccount:$SA" \
@@ -40,7 +41,7 @@ done
 
 gcloud run deploy "$SVC" --source . --region "$REGION" --quiet \
   --allow-unauthenticated --max-instances=1 --memory=512Mi \
-  --set-env-vars="^@^ALLOWED_EMAILS=${ALLOWED}@ACCOUNTS_SECRET=projects/${PN}/secrets/gmail-accounts@PUBLIC_URL=https://${SVC}-${PN}.${REGION}.run.app" \
+  --set-env-vars="^|^ALLOWED_EMAILS=${ALLOWED}|ACCOUNTS_SECRET=projects/${PN}/secrets/gmail-accounts|PUBLIC_URL=https://${SVC}-${PN}.${REGION}.run.app" \
   --set-secrets=GOOGLE_CLIENT_JSON=oauth-client:latest,MCP_SECRET=mcp-secret:latest
 
 URL="https://${SVC}-${PN}.${REGION}.run.app"
