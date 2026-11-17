@@ -18,7 +18,7 @@ SOCIAL = ("from:(notification@service.tiktok.com OR no-reply@mail.instagram.com 
 # (name, query, action) ; action: "trash" or label name (label + archive)
 RULES = [
     ("social notifications", SOCIAL, "trash"),
-    ("old promotions (30d+)", "category:promotions older_than:30d -is:starred", "trash"),
+    ("old promotions (30d+)", "category:promotions older_than:30d -is:starred -is:important -subject:(receipt OR invoice OR order OR shipped OR shipment OR \"חשבונית\" OR \"הזמנה\")", "trash"),
     ("old social tab (30d+)", "category:social older_than:30d -is:starred", "trash"),
     ("setup security alerts", 'from:no-reply@accounts.google.com "gmail-multi"', "trash"),
     ("forwarding confirmation", "from:forwarding-noreply@google.com", "trash"),
@@ -102,7 +102,7 @@ for email, info in accounts.items():
     svc = svc_for(info)
     before = svc.users().labels().get(userId="me", id="INBOX").execute()
     print(f"== {alias} ({email})  inbox now: {before.get('messagesTotal')} msgs, {before.get('messagesUnread')} unread")
-    for name, q, action in RULES:
+    for name, q, action in sorted(RULES, key=lambda r: r[2] == "trash"):
         ids = ids_for(svc, q)
         if not ids:
             continue
