@@ -14,18 +14,18 @@ if [ -z "$CLIENT" ] && ! gcloud secrets describe oauth-client >/dev/null 2>&1; t
 
 mk() { # name, file
   if gcloud secrets describe "$1" >/dev/null 2>&1; then
-    [ -n "${2:-}" ] && gcloud secrets versions add "$1" --data-file="$2" >/dev/null
+    if [ -n "${2:-}" ]; then gcloud secrets versions add "$1" --data-file="$2" >/dev/null; fi
   else
     if [ -n "${2:-}" ]; then gcloud secrets create "$1" --data-file="$2" >/dev/null
     else gcloud secrets create "$1" --replication-policy=automatic >/dev/null; fi
   fi
 }
-[ -n "$CLIENT" ] && mk oauth-client "$CLIENT"
+if [ -n "$CLIENT" ]; then mk oauth-client "$CLIENT"; fi
 if ! gcloud secrets describe mcp-secret >/dev/null 2>&1; then
   head -c 32 /dev/urandom | base64 | tr -d '/+=\n' > /tmp/ms && mk mcp-secret /tmp/ms && rm /tmp/ms
 fi
 mk gmail-accounts
-[ -n "$CLIENT" ] && rm -f "$CLIENT"
+if [ -n "$CLIENT" ]; then rm -f "$CLIENT"; fi
 
 for s in oauth-client mcp-secret gmail-accounts; do
   gcloud secrets add-iam-policy-binding "$s" --member="serviceAccount:$SA" \
