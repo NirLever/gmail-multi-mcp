@@ -398,6 +398,112 @@ def send_draft(account: str, draft_id: str) -> dict:
     return {"sent": True, "messageId": r["id"], "threadId": r.get("threadId")}
 
 
+def _list_message_ids(svc, query: str, limit: int) -> list[str]:
+    ids, token = [], None
+    while len(ids) < limit:
+        kw = {"userId": "me", "q": query, "maxResults": min(500, limit - len(ids))}
+        if token:
+            kw["pageToken"] = token
+        r = svc.users().messages().list(**kw).execute()
+        ids += [m["id"] for m in r.get("messages", [])]
+        token = r.get("nextPageToken")
+        if not token:
+            break
+    return ids
+
+
+def _metadata_batch(svc, ids: list[str], headers: list[str]) -> list[dict]:
+    out: list[dict] = []
+    def cb(_rid, resp, exc):
+        if exc is None and resp:
+            out.append(resp)
+    for i in range(0, len(ids), 50):
+        batch = svc.new_batch_http_request(callback=cb)
+        for mid in ids[i:i + 50]:
+            batch.add(svc.users().messages().get(userId="me", id=mid, format="metadata",
+                                                 metadataHeaders=headers))
+        batch.execute()
+    return out
+
+
+@mcp.tool()
+def mailbox_overview(account: str, query: str = "in:inbox", sample: int = 300, top: int = 25) -> dict:
+    """Survey a mailbox: estimated count for the query, plus the top senders (with counts,
+    unread counts, newest date and Gmail category) in a sample of the newest matching messages.
+    Use before cleanup to decide what to label, archive or trash."""
+    email = _resolve(account)
+    svc = _gmail(email)
+    est = svc.users().messages().list(userId="me", q=query, maxResults=1).execute() \
+        .get("resultSizeEstimate", 0)
+    ids = _list_message_ids(svc, query, max(1, min(sample, 1000)))
+    msgs = _metadata_batch(svc, ids, ["From", "Date", "List-Unsubscribe"])
+    senders: dict[str, dict] = {}
+    for m in msgs:
+        h = _headers(m.get("payload", {}))
+        frm = h.get("from", "?")
+        addr = (re.search(r"<([^>]+)>", frm) or re.search(r"(\S+@\S+)", frm))
+        key = (addr.group(1) if addr else frm).lower()
+        s = senders.setdefault(key, {"sender": frm[:80], "count": 0, "unread": 0, "newest": "",
+                                     "categories": set(), "newsletter": False})
+        s["count"] += 1
+        labels = m.get("labelIds", [])
+        if "UNREAD" in labels:
+            s["unread"] += 1
+        s["categories"].update(l.replace("CATEGORY_", "").lower() for l in labels if l.startswith("CATEGORY_"))
+        if h.get("list-unsubscribe"):
+            s["newsletter"] = True
+        if not s["newest"]:
+            s["newest"] = h.get("date", "")
+    rows = sorted(senders.items(), key=lambda kv: -kv[1]["count"])[:top]
+    return {"account": email, "query": query, "estimated_total": est, "sampled": len(msgs),
+            "top_senders": [{"address": k, **{**v, "categories": sorted(v["categories"])}} for k, v in rows]}
+
+
+@mcp.tool()
+def bulk_modify(account: str, query: str, add_labels: list[str] | None = None,
+                remove_labels: list[str] | None = None, trash: bool = False,
+                max_messages: int = 2000, dry_run: bool = True) -> dict:
+    """Apply one action to every message matching a Gmail search (up to max_messages, 10000 cap).
+    add_labels/remove_labels by name (archive = remove INBOX, mark read = remove UNREAD).
+    trash=True moves them to Trash (recoverable 30 days). Missing user labels in add_labels are
+    created. dry_run=True (default) only counts; call again with dry_run=False to apply."""
+    email = _resolve(account)
+    svc = _gmail(email)
+    ids = _list_message_ids(svc, query, max(1, min(max_messages, 10000)))
+    if dry_run:
+        return {"account": email, "query": query, "would_affect": len(ids), "dry_run": True}
+    add = list(add_labels or [])
+    existing = {l["name"].lower() for l in svc.users().labels().list(userId="me").execute().get("labels", [])}
+    for name in add:
+        if name.lower() not in existing and name.upper() not in {"INBOX", "UNREAD", "STARRED", "IMPORTANT", "TRASH", "SPAM"}:
+            svc.users().labels().create(userId="me", body={"name": name, "labelListVisibility": "labelShow",
+                                                           "messageListVisibility": "show"}).execute()
+    add_ids = _label_ids(svc, add) + (["TRASH"] if trash else [])
+    rem_ids = _label_ids(svc, list(remove_labels or []))
+    if trash:
+        rem_ids = [r for r in rem_ids if r != "TRASH"] + (["INBOX"] if "INBOX" not in rem_ids else [])
+    try:
+        for i in range(0, len(ids), 1000):
+            svc.users().messages().batchModify(userId="me", body={
+                "ids": ids[i:i + 1000], "addLabelIds": add_ids, "removeLabelIds": rem_ids}).execute()
+    except Exception:
+        if not trash:
+            raise
+        # Fallback: label first without TRASH, then trash one by one in HTTP batches
+        add_ids = [a for a in add_ids if a != "TRASH"]
+        if add_ids or rem_ids:
+            for i in range(0, len(ids), 1000):
+                svc.users().messages().batchModify(userId="me", body={
+                    "ids": ids[i:i + 1000], "addLabelIds": add_ids, "removeLabelIds": rem_ids}).execute()
+        for i in range(0, len(ids), 50):
+            b = svc.new_batch_http_request()
+            for mid in ids[i:i + 50]:
+                b.add(svc.users().messages().trash(userId="me", id=mid))
+            b.execute()
+    return {"account": email, "query": query, "affected": len(ids), "added": add_labels or [],
+            "removed": remove_labels or [], "trashed": trash}
+
+
 # ---------------------------------------------------------------- app
 
 app = mcp.streamable_http_app()
